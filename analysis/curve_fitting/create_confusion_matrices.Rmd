@@ -1,0 +1,650 @@
+---
+title: Create CMs
+---
+
+# Set-up
+
+- Load libraries
+
+```{r, echo=FALSE, message=FALSE}
+library(magrittr)
+library(data.table)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(RColorBrewer)
+library(knitr)
+library(lme4)
+library(emmeans)
+library(binhf)
+```
+
+- Set knitr to ommit code chunks
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+- Set up file paths
+```{r}
+base_dir = file.path(path.expand('~'),
+                     'direction_decoding',
+                     fsep=.Platform$file.sep)
+data_dir = file.path(base_dir, 'decoding',
+                     'train_beta_test_beta',
+                     'results',
+                     fsep = .Platform$file.sep)
+save_dir= file.path(base_dir,
+                    'analysis',
+                    'curve_fitting',
+                    fsep = .Platform$file.sep)
+highres_dir = file.path(base_dir,
+                        'decoding',
+                        'train_beta_test_raw',
+                        'results', fsep = .Platform$file.sep)
+```
+
+
+- Set up list of masks and subjects
+
+```{r}
+# List of masks
+masks = c('rsc', 'v1')
+
+# Get list of subjects from classifier accuracy
+file = file.path(data_dir,'clf_accuracy.tsv', fsep=.Platform$file.sep)
+sub_list = unique(fread(file, select=1, sep='\t'))
+
+# Get index of old and young participants
+old_idx = grepl('old', sub_list$sub_id)
+young_idx = grepl('young', sub_list$sub_id)
+```
+
+---
+
+# Get fitted curves of Gaussian and Uniform
+
+- Fitting functions
+
+```{r}
+# Define Gauss function 
+Mygauss = function(params, angle) {
+	m = 0
+	sd = params[1]
+	fit = exp(-0.5 * ((angle - m)*sd)^2)
+	fit = fit/sum(fit)
+	return(fit)
+}
+
+# Define uniform function
+Myuniform = function(params, angle) {
+	peak = params[1]
+	fit = rep((1-peak)/5, 6)
+	fit[3] = peak
+	return(fit)
+}
+
+# Cost function, here likelihood assuming arbitrary SD of 0.25 of normally distributed error term 
+Mycost = function(fit, data) {
+	se = (data - fit)^2
+	sse = sum(se)
+	like = 1/sqrt(2*pi*0.25^2) * exp(-se/(2*0.25^2))
+	LL = -sum(log(like))
+	return(LL)
+}
+
+# Wrapper for Gauss cost
+Mygauss_sse = function(params, angle, data, cidx) {
+	fit = Mygauss(params, angle)
+	LL = Mycost(fit[cidx], data[cidx])
+}
+
+# Wrapper for uniform cost
+Myuniform_sse = function(params, angle, data, cidx) {
+	fit = Myuniform(params, angle)
+	LL = Mycost(fit[cidx], data[cidx])
+	return(LL) 
+}
+
+# Function to get SSE
+Mysse = function(fit, data) {
+  se = (data - fit)^2
+  sse = sum(se)
+  return(sse)
+}
+```
+
+- Read prediction of beta decoding
+
+```{r}
+path = file.path(data_dir, 'clf_prediction.tsv', fsep=.Platform$file.sep)
+df_prediction = read.table(path, sep='\t', header = TRUE)
+```
+
+- Add group column
+```{r}
+df_prediction$group = NA
+df_prediction$group[grep('old', df_prediction$sub_id)] = 'older'
+df_prediction$group[grep('young', df_prediction$sub_id)] = 'younger'
+```
+
+- Set bins of beta decoding (sic equally sized direction bins)
+
+```{r}
+bins = unique(df_prediction$angle_bin)
+n_bins = length(bins)
+```
+
+- Make CM direction invariant
+
+```{r, echo=FALSE}
+df_prediction_invariant_subj = data.frame(matrix(NA,
+                                            0,
+                                            length(unique(df_prediction$angle_bin))+2))
+colnames(df_prediction_invariant_subj) = as.character(
+  c(
+    c(seq(length(bins))),
+    'mask',
+    'sub_id'))
+
+# Loop over each mask
+for(mask_count in c(1:length(masks))){
+  
+  # Select mask
+  mask = masks[mask_count]
+  
+  for(sub_count in 1:length(sub_list$sub_id)){
+    
+    # Loop over each participant
+    sub_id = sub_list[sub_count]$sub_id
+    
+    # Allocate matrix to hold bin specific counts
+    counts = data.frame(matrix(NA, length(bins), ncol(df_prediction_invariant_subj)-2))
+    
+    for(i in unique(df_prediction$prediction)){
+      
+      # Constrain data to mask
+      data = df_prediction[which(df_prediction$mask == mask),]
+      # Constrain data to specific prediction
+      data = data[which(data$sub_id == sub_id & data$prediction == i),]
+      
+      # Count number of prediction given a certain traveled direction
+      counts[i,] = table(factor(data$angle_bin, levels=c(bins)))
+      
+      # Shift correct direction to first position
+      counts[i,] = shift(counts[i,], places=(i-1), dir='left')
+    }
+    
+    # Collapse over directions
+    counts = data.frame(t(colSums(counts)))
+    
+    # Normalize counts
+    counts = counts/sum(counts)
+    
+    # Shift correct direction to center (for plotting):
+    counts = data.frame(t(apply(counts, 1, function(x) shift(x, places = 2,
+                                                             dir = 'right'))))
+    
+    # Add mask variable
+    counts$mask = mask
+    # Add sub_id variable
+    counts$sub_id = sub_id
+    
+    # Set column names
+    colnames(counts) = as.character(c((bins - bins[length(bins)/2]) * 60, 'mask', 'sub_id'))
+    
+    # Append mask specific value to data frame
+    df_prediction_invariant_subj = rbind(df_prediction_invariant_subj, counts)
+    
+  }
+}
+```
+
+- Add group variable and reorder columns
+
+```{r}
+df_prediction_invariant_subj$group = NA
+df_prediction_invariant_subj$group[grep('old', df_prediction_invariant_subj$sub_id)] = 'older'
+df_prediction_invariant_subj$group[grep('young', df_prediction_invariant_subj$sub_id)] = 'younger'
+
+df_prediction_invariant_subj = df_prediction_invariant_subj[,c(n_bins + 2,n_bins + 1,n_bins + 3,1:n_bins)]
+```
+
+- Change column names to direction invariant
+
+```{r}
+colnames(df_prediction_invariant_subj) = (
+  c('sub_id',
+    'mask',
+    'group',
+    paste(
+      colnames(df_prediction_invariant_subj)[4:length(colnames(df_prediction_invariant_subj))],
+      'deg',
+      sep='')))
+```
+
+- Save CM to file
+
+```{r}
+file = file.path(save_dir, 'data_cm.tsv')
+write.table(df_prediction_invariant_subj, file, sep='\t', row.names = FALSE)
+```
+
+
+# Fit uniform and gauss to CM and save as files
+
+```{r}
+angles = (bins - bins[length(bins)/2]) * 60
+fit_cols = c(1:((length(bins)/2)-1),((length(bins)/2)+1):length(bins))
+
+# Fitting functions combining previous functions
+Gaussfit <- function(confusion_mat, angles){optim(c(0.01),
+                                                  function(params) {Mygauss_sse(params,
+                                                                                angles,
+                                                                                confusion_mat,
+                                                                                fit_cols)},
+                                                  method = 'L-BFGS-B',
+                                                  lower = 0,
+                                                  upper = 1)}
+Unifit <- function(confusion_mat, angles){optim(c(0.01),
+                                                function(params) {Myuniform_sse(params,
+                                                                                angles,
+                                                                                confusion_mat,
+                                                                                fit_cols)},
+                                                method="L-BFGS-B",
+                                                lower = 0,
+                                                upper = 1)}
+
+# Apply functions to each line of subject wise confusion matrices
+# Gauss (Precision, LL of fit, SSE)
+df_prediction_invariant_subj$prec = apply(df_prediction_invariant_subj,
+                                          1,
+                                          function(x) Gaussfit(as.numeric(x[4:(length(bins)+3)]),
+                                                               angles)$par)
+df_prediction_invariant_subj$ll_gauss = apply(df_prediction_invariant_subj,
+                                              1,
+                                              function(x) Gaussfit(as.numeric(x[4:(length(bins)+3)]),
+                                                                   angles)$value)
+df_prediction_invariant_subj$sse_gauss = apply(df_prediction_invariant_subj,
+                                               1,
+                                               function(x) sum(
+                                                 (as.numeric(x[fit_cols+3]) - 
+                                                    Mygauss(as.numeric(x[4:(length(bins)+3)]),
+                                                            angles)[fit_cols])^2))
+# Uniform (LL of fit, SSE)
+df_prediction_invariant_subj$ll_uni = apply(df_prediction_invariant_subj,
+                                            1,
+                                            function(x) Unifit(as.numeric(x[4:(length(bins)+3)]),
+                                                               angles)$value)
+df_prediction_invariant_subj$sse_uni = apply(df_prediction_invariant_subj,
+                                             1,
+                                             function(x) sum(
+                                               (as.numeric(x[fit_cols+3]) - 
+                                                  Myuniform(as.numeric(x[4:(length(bins)+3)]),
+                                                            angles)[fit_cols])^2))
+
+```
+
+- Get only fit data and save
+
+```{r}
+# Exclude CM from data to get only parameters of fit
+data_fit = df_prediction_invariant_subj[,-c(4:9)]
+
+# Save data
+file = file.path(save_dir, 'curve_fit.tsv')
+write.table(data_fit, file, sep='\t', row.names = FALSE)
+```
+
+- Fit Gauss (via precision taken from curve fits)
+
+```{r}
+data_fit_gauss = df_prediction_invariant_subj[,c(1:9)]
+data_fit_gauss[,4:ncol(data_fit_gauss)] = data.frame(
+  t(
+    apply(data_fit, 1, function(x) Mygauss(as.numeric(x[4]), angles))))
+```
+
+- Fit uniform (via peak of CM)
+
+```{r}
+data_fit_uni = df_prediction_invariant_subj[,c(1:9)]
+data_fit_uni[,4:ncol(data_fit_gauss)] = data.frame(
+  t(
+    apply(df_prediction_invariant_subj, 1, function(x) Myuniform(as.numeric(x[6]), angles))))
+```
+
+- Save fitted curves to .tsv
+
+```{r}
+file = file.path(save_dir, 'data_gauss.tsv')
+write.table(data_fit_gauss, file, sep='\t', row.names = FALSE)
+
+file = file.path(save_dir, 'data_uni.tsv')
+write.table(data_fit_uni, file, sep='\t', row.names = FALSE)
+```
+
+---
+
+# High resolution confusion matrices
+
+- Read prediction of continuous decoding
+
+```{r}
+path = file.path(highres_dir, 'clf_prediction.tsv', fsep=.Platform$file.sep)
+df_prediction = read.table(path, sep='\t', header = TRUE)
+```
+
+- Add group column
+```{r}
+df_prediction$group = NA
+df_prediction$group[grep('old', df_prediction$sub_id)] = 'older'
+df_prediction$group[grep('young', df_prediction$sub_id)] = 'younger'
+```
+
+- Add column with higher bin resolution
+
+```{r}
+# Define bin resolution (possible values: 60/bin_resolution leaves no modulus)
+bin_resolution = 10
+
+df_prediction$bin_mode_res = floor(df_prediction$angle_mode/bin_resolution)
+df_prediction$bin_mean_res = floor(df_prediction$angle_mean/bin_resolution)
+
+n_bins = 60/bin_resolution * 6
+
+bins = seq(0, 359.99, bin_resolution)
+```
+
+- Make CM direction invariant
+```{r, echo=FALSE}
+df_prediction_invariant_subj = data.frame(matrix(NA,
+                                            0,
+                                            length(unique(df_prediction$bin_mean_res))+2))
+colnames(df_prediction_invariant_subj) = as.character(c(bins - bins[length(bins)/2], 'mask', 'sub_id'))
+
+# Loop over each mask
+for(mask_count in c(1:length(unique(df_prediction$mask)))){
+  
+  # Select mask
+  mask = masks[mask_count]
+  
+  for(sub_count in 1:length(sub_list$sub_id)){
+    
+    # Loop over each participant
+    sub_id = sub_list[sub_count]$sub_id
+    
+    # Allocate matrix to hold bin specific counts
+    counts = data.frame(matrix(NA, 6, ncol(df_prediction_invariant_subj)-2))
+    
+    for(i in unique(df_prediction$prediction)){
+      
+      data = df_prediction[which(df_prediction$mask == mask),]
+      data = data[which(data$sub_id == sub_id & data$prediction == i),]
+      
+      # Count number of prediction given a certain traveled direction
+      counts[i,] = table(factor(data$bin_mean_res, levels=c(0:(length(bins)-1))))
+      
+      # Shift correct direction to first position
+      counts[i,] = shift(counts[i,], places=((i-1)*60/bin_resolution), dir='left')
+    }
+    
+    # Collapse over directions
+    counts = data.frame(t(colSums(counts)))
+    
+    # Normalize counts
+    counts = counts/sum(counts)
+    
+    # Shift correct direction to center (for plotting): Most middle, left side bin center
+    counts = data.frame(t(apply(counts, 1, function(x) shift(x, places=(120/bin_resolution) +
+                                                               floor((60/bin_resolution)/2), dir='right'))))
+    
+    # Add mask variable
+    counts$mask = mask
+    # Add sub_id variable
+    counts$sub_id = sub_id
+    
+    # Set column names
+    colnames(counts) = as.character(c(bins - bins[length(bins)/2], 'mask', 'sub_id'))
+    
+    # Append mask specific value to data frame
+    df_prediction_invariant_subj = rbind(df_prediction_invariant_subj, counts)
+    
+  }
+}
+```
+
+- Add group variable and reorder columns
+
+```{r}
+df_prediction_invariant_subj$group = NA
+df_prediction_invariant_subj$group[grep('old', df_prediction_invariant_subj$sub_id)] = 'older'
+df_prediction_invariant_subj$group[grep('young', df_prediction_invariant_subj$sub_id)] = 'younger'
+
+df_prediction_invariant_subj = df_prediction_invariant_subj[,c(n_bins + 2,n_bins + 1,n_bins + 3,1:n_bins)]
+```
+
+- Change column names to direction invariant
+
+```{r}
+colnames(df_prediction_invariant_subj) = c('sub_id', 'mask', 'group',
+                                           paste(c(bins - bins[length(bins)/2]),'deg', sep=''))
+```
+
+- Save high res CM to file
+
+```{r}
+file = file.path(save_dir, 'data_cm_highres.tsv')
+write.table(df_prediction_invariant_subj, file, sep='\t', row.names = FALSE)
+```
+
+---
+
+# Fit uniform and gauss to highres and save as files
+
+- Define functions for curve fitting
+
+```{r}
+# Define Function for curve fitting
+Mygauss = function(params, angle) {
+	m = 0
+	sd = params[1]
+	fit = exp(-0.5 * ((angle - m)*sd)^2)
+	fit = fit/sum(fit)
+	return(fit)
+}
+
+# Define uniform function
+Myuniform = function(params, angle) {
+	peak = params[1]
+	fit = rep((1-peak)/(n_bins-1), n_bins)
+	fit[60/bin_resolution * 3] = peak
+	return(fit)
+}
+
+# Cost function, here likelihood assuming arbitrary SD of 0.25 of normally distributed error term 
+Mycost = function(fit, data) {
+	se = (data - fit)^2
+	sse = sum(se)
+	like = 1/sqrt(2*pi*0.25^2) * exp(-se/(2*0.25^2))
+	LL = -sum(log(like))
+	return(LL)
+}
+
+# Wrapper for Gauss cost
+Mygauss_sse = function(params, angle, data, cidx) {
+	fit = Mygauss(params, angle)
+	LL = Mycost(fit[cidx], data[cidx])
+}
+
+# Wrapper for uniform cost
+Myuniform_sse = function(params, angle, data, cidx) {
+	fit = Myuniform(params, angle)
+	LL = Mycost(fit[cidx], data[cidx])
+	return(LL) 
+}
+```
+
+- Make CM direction invariant
+
+```{r, echo=FALSE}
+df_prediction_invariant_subj = data.frame(matrix(NA,
+                                            0,
+                                            length(unique(df_prediction$bin_mean_res))+2))
+colnames(df_prediction_invariant_subj) = as.character(c(bins - bins[length(bins)/2], 'mask', 'sub_id'))
+
+# Loop over each mask
+for(mask_count in c(1:length(masks))){
+  
+  # Select mask
+  mask = masks[mask_count]
+  
+  for(sub_count in 1:length(sub_list$sub_id)){
+    
+    # Loop over each participant
+    sub_id = sub_list[sub_count]$sub_id
+    
+    # Allocate matrix to hold bin specific counts
+    counts = data.frame(matrix(NA, 6, ncol(df_prediction_invariant_subj)-2))
+    
+    for(i in unique(df_prediction$prediction)){
+      
+      data = df_prediction[which(df_prediction$mask == mask),]
+      data = data[which(data$sub_id == sub_id & data$prediction == i),]
+      
+      # Count number of prediction given a certain traveled direction
+      counts[i,] = table(factor(data$bin_mean_res, levels=c(0:(length(bins)-1))))
+      
+      # Shift correct direction to first position
+      counts[i,] = shift(counts[i,], places=((i-1)*60/bin_resolution), dir='left')
+    }
+    
+    # Collapse over directions
+    counts = data.frame(t(colSums(counts)))
+    
+    # Normalize counts
+    counts = counts/sum(counts)
+    
+    # Shift correct direction to center (for plotting): Most middle, left side bin center
+    counts = data.frame(t(apply(counts, 1, function(x) shift(x, places=(120/bin_resolution) +
+                                                               floor((60/bin_resolution)/2), dir='right'))))
+    
+    # Add mask variable
+    counts$mask = mask
+    # Add sub_id variable
+    counts$sub_id = sub_id
+    
+    # Set column names
+    colnames(counts) = as.character(c(bins - bins[length(bins)/2], 'mask', 'sub_id'))
+    
+    # Append mask specific value to data frame
+    df_prediction_invariant_subj = rbind(df_prediction_invariant_subj, counts)
+    
+  }
+}
+```
+
+- Get model parameters to extract curves
+
+```{r}
+angles = bins - bins[length(bins)/2]
+fit_cols = c(1:((length(bins)/2)-1),((length(bins)/2)+1):length(bins))
+
+# Fitting functions combining previous functions
+Gaussfit <- function(confusion_mat, angles){optim(c(0.01),
+                                                  function(params) {Mygauss_sse(params,
+                                                                                angles,
+                                                                                confusion_mat,
+                                                                                fit_cols)},
+                                                  method = 'L-BFGS-B',
+                                                  lower = 0,
+                                                  upper = 1)}
+Unifit <- function(confusion_mat, angles){optim(c(0.01),
+                                                function(params) {Myuniform_sse(params,
+                                                                                angles,
+                                                                                confusion_mat,
+                                                                                fit_cols)},
+                                                method="L-BFGS-B",
+                                                lower = 0,
+                                                upper = 1)}
+
+# Apply functions to each line of subject wise confusion matrices
+# Gauss (Precision, LL of fit, SSE)
+df_prediction_invariant_subj$prec = apply(df_prediction_invariant_subj,
+                                          1,
+                                          function(x) Gaussfit(as.numeric(x[1:length(bins)]),
+                                                               angles)$par)
+df_prediction_invariant_subj$ll_gauss = apply(df_prediction_invariant_subj,
+                                              1,
+                                              function(x) Gaussfit(as.numeric(x[1:length(bins)]),
+                                                                   angles)$value)
+df_prediction_invariant_subj$sse_gauss = apply(df_prediction_invariant_subj,
+                                               1,
+                                               function(x) sum(
+                                                 (as.numeric(x[fit_cols]) - 
+                                                    Mygauss(as.numeric(x[length(bins)+3]),
+                                                            angles)[fit_cols])^2))
+# Uniform (LL of fit, SSE)
+df_prediction_invariant_subj$ll_uni = apply(df_prediction_invariant_subj,
+                                            1,
+                                            function(x) Unifit(as.numeric(x[1:length(bins)]),
+                                                               angles)$value)
+df_prediction_invariant_subj$sse_uni = apply(df_prediction_invariant_subj,
+                                             1,
+                                             function(x) sum(
+                                               (as.numeric(x[fit_cols]) - 
+                                                  Myuniform(as.numeric(x[length(bins)/2]),
+                                                            angles)[fit_cols])^2))
+
+```
+
+- Extract fitted curves
+
+```{r}
+data_fit_gauss = df_prediction_invariant_subj[,1:(length(bins)+2)]
+data_fit_uni = df_prediction_invariant_subj[,1:(length(bins)+2)]
+
+# Fill uni fit and gauss fit
+data_fit_gauss[,1:length(bins)] = t(apply(df_prediction_invariant_subj,
+                              1,
+                              function(x) Mygauss(as.numeric(x[length(bins) + 3]),angles)))
+data_fit_uni[,1:length(bins)] = t(apply(df_prediction_invariant_subj,
+                              1,
+                              function(x) Myuniform(as.numeric(x[length(bins)/2]),angles)))
+```
+
+- Add group column, sort columns, and rename columns
+
+```{r}
+# Add group column
+data_fit_gauss$group = NA
+data_fit_gauss$group[grep('old', data_fit_gauss$sub_id)] = 'older'
+data_fit_gauss$group[grep('young', data_fit_gauss$sub_id)] = 'younger'
+# Sort columns
+data_fit_gauss = data_fit_gauss[,c(n_bins + 2, n_bins + 1, n_bins + 3, 1:n_bins)]
+# Rename columns
+colnames(data_fit_gauss) = c('sub_id', 'mask', 'group',
+                             paste(c(bins - bins[length(bins)/2]),'deg', sep=''))
+
+# Add group column
+data_fit_uni$group = NA
+data_fit_uni$group[grep('old', data_fit_uni$sub_id)] = 'older'
+data_fit_uni$group[grep('young', data_fit_uni$sub_id)] = 'younger'
+# Sort columns
+data_fit_uni = data_fit_uni[,c(n_bins + 2, n_bins + 1, n_bins + 3, 1:n_bins)]
+# Rename columns
+colnames(data_fit_uni) = c('sub_id', 'mask', 'group',
+                             paste(c(bins - bins[length(bins)/2]),'deg', sep=''))
+```
+
+- Save fitted curves to .tsv
+
+```{r}
+file = file.path(save_dir, 'data_gauss_highres.tsv')
+write.table(data_fit_gauss, file, sep='\t', row.names = FALSE)
+
+file = file.path(save_dir, 'data_uni_highres.tsv')
+write.table(data_fit_uni, file, sep='\t', row.names = FALSE)
+```
+
+

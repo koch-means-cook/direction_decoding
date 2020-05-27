@@ -1,0 +1,353 @@
+---
+title: "train_raw_test_raw_plotting"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Load libraries
+```{r, message=FALSE}
+library(reshape2)
+library(ggplot2)
+library(scales)
+library(plotly)
+library(plyr)
+library(Rfast)
+library(data.table)
+library(knitr)
+library(binhf)
+library(viridis)
+library(grid)
+library(gridExtra)
+library(lme4)
+library(emmeans)
+```
+
+
+- Set all chunks to no echo
+```{r}
+knitr::opts_knit$set(echo=FALSE)
+```
+
+---
+---
+
+# Set up
+
+- Set up paths
+
+```{r, echo=FALSE}
+bids_dir = file.path(path.expand('~'),
+                     'direction_decoding_BIDS',
+                     fsep = .Platform$file.sep)
+repo_dir = file.path(path.expand('~'),
+                     'direction_decoding',
+                     fsep = .Platform$file.sep)
+fwd_dir = file.path(repo_dir,
+                    'decoding',
+                    'train_beta_test_raw',
+                    'results',
+                    fsep = .Platform$file.sep)
+bwd_dir = file.path(repo_dir, 'decoding',
+                    'backwards_decoding',
+                    'train_beta_test_raw',
+                    'results',
+                    fsep = .Platform$file.sep)
+```
+
+- Read in .tsv-files
+    - Classification accuracy and prediction of FWD walking and BWD walking
+    
+```{r, echo=FALSE}
+# Accuracy
+# FWD
+path = file.path(fwd_dir, 'clf_accuracy.tsv', fsep=.Platform$file.sep)
+df_acc_fwd = read.table(path, sep='\t', header = TRUE)
+# BWD
+path = file.path(bwd_dir, 'clf_accuracy.tsv', fsep=.Platform$file.sep)
+df_acc_bwd = read.table(path, sep='\t', header = TRUE)
+# Prediction
+# FWD
+path = file.path(fwd_dir, 'clf_prediction.tsv', fsep=.Platform$file.sep)
+df_pred_fwd = read.table(path, sep='\t', header = TRUE)
+# BWD
+path = file.path(bwd_dir, 'clf_prediction.tsv', fsep=.Platform$file.sep)
+df_pred_bwd = read.table(path, sep='\t', header = TRUE)
+```
+
+---
+
+- Get list of masks and subjects
+```{r, echo=FALSE}
+masks = as.vector(unique(df_acc_fwd$mask))
+sub_list = as.vector(unique(df_pred_bwd$sub_id))
+```
+
+- Add group column to data frames
+```{r, echo=FALSE}
+# Accuracy
+# FWD
+df_acc_fwd$group = NA
+df_acc_fwd$group[grep('old', df_acc_fwd$sub_id)] = 'older'
+df_acc_fwd$group[grep('young', df_acc_fwd$sub_id)] = 'younger'
+# BWD
+df_acc_bwd$group = NA
+df_acc_bwd$group[grep('old', df_acc_bwd$sub_id)] = 'older'
+df_acc_bwd$group[grep('young', df_acc_bwd$sub_id)] = 'younger'
+
+# Prediction
+# FWD
+df_pred_fwd$group = NA
+df_pred_fwd$group[grep('old', df_pred_fwd$sub_id)] = 'older'
+df_pred_fwd$group[grep('young', df_pred_fwd$sub_id)] = 'younger'
+# BWD
+df_pred_bwd$group = NA
+df_pred_bwd$group[grep('old', df_pred_bwd$sub_id)] = 'older'
+df_pred_bwd$group[grep('young', df_pred_bwd$sub_id)] = 'younger'
+```
+
+---
+
+# How does the accuracy at the walking direction target change based on FWD and BWD walking in different masks?
+
+- In case there are shifts in the accuracy:
+    - To find out if the lost accuracy shifts towards the 180° phase shifted direction (as predicted by 
+    classification based on visual features) we need to assess the amount of 180° phase shifted predictions.
+
+- Rebuild accuracy values out of predictions for FWD and BWD files
+
+```{r, echo=FALSE}
+# FWD
+df_pred_fwd_inv = df_pred_fwd
+df_pred_fwd_inv$bin_diff_mean = df_pred_fwd_inv$prediction - df_pred_fwd_inv$bin_mean
+df_pred_fwd_inv$bin_diff_mode = df_pred_fwd_inv$prediction - df_pred_fwd_inv$bin_mode
+
+# Mean
+# Make prediction direction invariant
+# Dir 1
+df_pred_fwd_inv$bin_diff_mean[df_pred_fwd_inv$bin_mean == 1 & df_pred_fwd_inv$bin_diff_mean == 4] = -2
+df_pred_fwd_inv$bin_diff_mean[df_pred_fwd_inv$bin_mean == 1 & df_pred_fwd_inv$bin_diff_mean == 5] = -1
+# Dir 2
+df_pred_fwd_inv$bin_diff_mean[df_pred_fwd_inv$bin_mean == 2 & df_pred_fwd_inv$bin_diff_mean == 4] = -2
+# Dir 4
+df_pred_fwd_inv$bin_diff_mean[df_pred_fwd_inv$bin_mean == 4 & df_pred_fwd_inv$bin_diff_mean == -3] = 3
+# Dir 5
+df_pred_fwd_inv$bin_diff_mean[df_pred_fwd_inv$bin_mean == 5 & df_pred_fwd_inv$bin_diff_mean == -4] = 2
+df_pred_fwd_inv$bin_diff_mean[df_pred_fwd_inv$bin_mean == 5 & df_pred_fwd_inv$bin_diff_mean == -3] = 3
+# Dir 6
+df_pred_fwd_inv$bin_diff_mean[df_pred_fwd_inv$bin_mean == 6 & df_pred_fwd_inv$bin_diff_mean == -5] = 1
+df_pred_fwd_inv$bin_diff_mean[df_pred_fwd_inv$bin_mean == 6 & df_pred_fwd_inv$bin_diff_mean == -4] = 2
+df_pred_fwd_inv$bin_diff_mean[df_pred_fwd_inv$bin_mean == 6 & df_pred_fwd_inv$bin_diff_mean == -3] = 3
+
+# Mode
+# Make prediction direction invariant
+# Dir 1
+df_pred_fwd_inv$bin_diff_mode[df_pred_fwd_inv$bin_mode == 1 & df_pred_fwd_inv$bin_diff_mode == 4] = -2
+df_pred_fwd_inv$bin_diff_mode[df_pred_fwd_inv$bin_mode == 1 & df_pred_fwd_inv$bin_diff_mode == 5] = -1
+# Dir 2
+df_pred_fwd_inv$bin_diff_mode[df_pred_fwd_inv$bin_mode == 2 & df_pred_fwd_inv$bin_diff_mode == 4] = -2
+# Dir 4
+df_pred_fwd_inv$bin_diff_mode[df_pred_fwd_inv$bin_mode == 4 & df_pred_fwd_inv$bin_diff_mode == -3] = 3
+# Dir 5
+df_pred_fwd_inv$bin_diff_mode[df_pred_fwd_inv$bin_mode == 5 & df_pred_fwd_inv$bin_diff_mode == -4] = 2
+df_pred_fwd_inv$bin_diff_mode[df_pred_fwd_inv$bin_mode == 5 & df_pred_fwd_inv$bin_diff_mode == -3] = 3
+# Dir 6
+df_pred_fwd_inv$bin_diff_mode[df_pred_fwd_inv$bin_mode == 6 & df_pred_fwd_inv$bin_diff_mode == -5] = 1
+df_pred_fwd_inv$bin_diff_mode[df_pred_fwd_inv$bin_mode == 6 & df_pred_fwd_inv$bin_diff_mode == -4] = 2
+df_pred_fwd_inv$bin_diff_mode[df_pred_fwd_inv$bin_mode == 6 & df_pred_fwd_inv$bin_diff_mode == -3] = 3
+
+
+
+# BWD
+df_pred_bwd_inv = df_pred_bwd
+df_pred_bwd_inv$bin_diff_mean = df_pred_bwd_inv$prediction - df_pred_bwd_inv$bin_mean
+df_pred_bwd_inv$bin_diff_mode = df_pred_bwd_inv$prediction - df_pred_bwd_inv$bin_mode
+
+# Mean
+# Make prediction direction invariant
+# Dir 1
+df_pred_bwd_inv$bin_diff_mean[df_pred_bwd_inv$bin_mean == 1 & df_pred_bwd_inv$bin_diff_mean == 4] = -2
+df_pred_bwd_inv$bin_diff_mean[df_pred_bwd_inv$bin_mean == 1 & df_pred_bwd_inv$bin_diff_mean == 5] = -1
+# Dir 2
+df_pred_bwd_inv$bin_diff_mean[df_pred_bwd_inv$bin_mean == 2 & df_pred_bwd_inv$bin_diff_mean == 4] = -2
+# Dir 4
+df_pred_bwd_inv$bin_diff_mean[df_pred_bwd_inv$bin_mean == 4 & df_pred_bwd_inv$bin_diff_mean == -3] = 3
+# Dir 5
+df_pred_bwd_inv$bin_diff_mean[df_pred_bwd_inv$bin_mean == 5 & df_pred_bwd_inv$bin_diff_mean == -4] = 2
+df_pred_bwd_inv$bin_diff_mean[df_pred_bwd_inv$bin_mean == 5 & df_pred_bwd_inv$bin_diff_mean == -3] = 3
+# Dir 6
+df_pred_bwd_inv$bin_diff_mean[df_pred_bwd_inv$bin_mean == 6 & df_pred_bwd_inv$bin_diff_mean == -5] = 1
+df_pred_bwd_inv$bin_diff_mean[df_pred_bwd_inv$bin_mean == 6 & df_pred_bwd_inv$bin_diff_mean == -4] = 2
+df_pred_bwd_inv$bin_diff_mean[df_pred_bwd_inv$bin_mean == 6 & df_pred_bwd_inv$bin_diff_mean == -3] = 3
+
+# Mode
+# Make prediction direction invariant
+# Dir 1
+df_pred_bwd_inv$bin_diff_mode[df_pred_bwd_inv$bin_mode == 1 & df_pred_bwd_inv$bin_diff_mode == 4] = -2
+df_pred_bwd_inv$bin_diff_mode[df_pred_bwd_inv$bin_mode == 1 & df_pred_bwd_inv$bin_diff_mode == 5] = -1
+# Dir 2
+df_pred_bwd_inv$bin_diff_mode[df_pred_bwd_inv$bin_mode == 2 & df_pred_bwd_inv$bin_diff_mode == 4] = -2
+# Dir 4
+df_pred_bwd_inv$bin_diff_mode[df_pred_bwd_inv$bin_mode == 4 & df_pred_bwd_inv$bin_diff_mode == -3] = 3
+# Dir 5
+df_pred_bwd_inv$bin_diff_mode[df_pred_bwd_inv$bin_mode == 5 & df_pred_bwd_inv$bin_diff_mode == -4] = 2
+df_pred_bwd_inv$bin_diff_mode[df_pred_bwd_inv$bin_mode == 5 & df_pred_bwd_inv$bin_diff_mode == -3] = 3
+# Dir 6
+df_pred_bwd_inv$bin_diff_mode[df_pred_bwd_inv$bin_mode == 6 & df_pred_bwd_inv$bin_diff_mode == -5] = 1
+df_pred_bwd_inv$bin_diff_mode[df_pred_bwd_inv$bin_mode == 6 & df_pred_bwd_inv$bin_diff_mode == -4] = 2
+df_pred_bwd_inv$bin_diff_mode[df_pred_bwd_inv$bin_mode == 6 & df_pred_bwd_inv$bin_diff_mode == -3] = 3
+
+```
+
+- Get accuracy for target and 180° shifted from target from predictions
+    - Average over folds
+        - In the BWD case we do not have different folds. This is because the training data (betas) 
+        was created while excluding BWD events in the GLM. In oder to keep the comparison clean
+        we want to average over the four folds of the FWD data.
+    - All further calculations are done based on the **mean** of angles within one TR
+
+```{r, echo=FALSE}
+# Calculate accuracy
+# FWD
+df_fwd_acc = ddply(df_pred_fwd_inv,
+                   .(sub_id, mask, group, fold),
+                   summarise,
+                   accuracy_m120 = sum(bin_diff_mean == -2)/length(bin_diff_mean),
+                   accuracy_m60 = sum(bin_diff_mean == -1)/length(bin_diff_mean),
+                   accuracy_0 = sum(bin_diff_mean == 0)/length(bin_diff_mean),
+                   accuracy_60 = sum(bin_diff_mean == 1)/length(bin_diff_mean),
+                   accuracy_120 = sum(bin_diff_mean == 2)/length(bin_diff_mean),
+                   accuracy_180 = sum(bin_diff_mean == 3)/length(bin_diff_mean))
+
+# Average over folds
+df_fwd_acc_subj = ddply(df_fwd_acc,
+                        .(sub_id, mask, group),
+                        summarise,
+                        accuracy_m120 = mean(accuracy_m120),
+                        accuracy_m60 = mean(accuracy_m60),
+                        accuracy_0 = mean(accuracy_0),
+                        accuracy_60 = mean(accuracy_60),
+                        accuracy_120 = mean(accuracy_120),
+                        accuracy_180 = mean(accuracy_180))
+
+# BWD
+df_bwd_acc = ddply(df_pred_bwd_inv,
+                   .(sub_id, mask, group),
+                   summarise,
+                   accuracy_m120 = sum(bin_diff_mean == -2)/length(bin_diff_mean),
+                   accuracy_m60 = sum(bin_diff_mean == -1)/length(bin_diff_mean),
+                   accuracy_0 = sum(bin_diff_mean == 0)/length(bin_diff_mean),
+                   accuracy_60 = sum(bin_diff_mean == 1)/length(bin_diff_mean),
+                   accuracy_120 = sum(bin_diff_mean == 2)/length(bin_diff_mean),
+                   accuracy_180 = sum(bin_diff_mean == 3)/length(bin_diff_mean))
+
+
+```
+
+
+- Fuse data frames of FWD and BWD events
+
+```{r, echo=FALSE}
+df_fwd_acc_subj$dir = 'fwd'
+df_bwd_acc$dir = 'bwd'
+
+df_acc_inv = rbind(df_fwd_acc_subj, df_bwd_acc)
+```
+
+---
+
+# Calculate visual influence score
+
+- Calculate difference between FWD 0° and BWD 0° classification accuracy in V1 and RSC
+    - (BWD - FWD) accuracy
+- Calculate difference between BWD 180° and FWD 180° accuracy in V1 and RSC
+    - (FWD-BWD) accuracy (Turn around difference so the two values cancel each other out
+    ==> No influence of absolute value)
+    
+    - Number above 0: BWD accuracy works better than FWD accuracy
+    - Number below 0: FWD accuracy works better than BWD accuracy
+
+```{r, echo=FALSE}
+data_diff = ddply(df_acc_inv, 
+                  .(sub_id, mask, group),
+                  summarise,
+                  diff_0 = accuracy_0[2] - accuracy_0[1] / accuracy_0[1],
+                  diff_180 = accuracy_180[2] - accuracy_180[1] / accuracy_180[2])
+```
+
+
+- Calculate differences of these two differences for both masks:
+    - $(\textrm{BWD}_{180} - \textrm{FWD}_{180}) - (\textrm{BWD}_{0} - \textrm{FWD}_{0})$
+    - Value > 0: Visual influence (since effects don't cancel out), the more negative, the more visual 
+    influence
+    - Value < 0: No evidence for visual influence since prediction did not switch with BWD walking
+    
+```{r, echo=FALSE}
+data_diff$score = data_diff$diff_180 - data_diff$diff_0
+```
+
+
+---
+
+# Save visual infuence score data to .tsv
+
+```{r}
+file = file.path(repo_dir, 'analysis', 'backwards_walking', 'visual_influence.tsv', fsep=.Platform$file.sep)
+write.table(data_diff, file, sep='\t', row.names = FALSE)
+```
+
+---
+
+# Get BWD confusion function
+
+```{r}
+data_cm_bwd = data.frame(matrix(NA, 0, 8))
+colnames(c(paste(seq(-120,180,by=60), 'deg', sep=''), 'sub_id', 'mask'))
+
+# Loop over each mask
+for(mask_count in c(1:length(masks))){
+  
+  # Select mask
+  mask = masks[mask_count]
+  
+  for(sub_count in 1:length(sub_list)){
+    
+    # Loop over each participant
+    sub_id = sub_list[sub_count]
+    
+    # Count number of occurences (levels assure you also count occurence of bins which did not occur)
+    data = df_pred_bwd_inv[which(df_pred_bwd_inv$mask == mask & df_pred_bwd_inv$sub_id == sub_id),]
+    counts = unname(table(factor(data$bin_diff_mean, levels=c(-2:3))))
+    
+    # Unroll unhandy table format of 'table' into data.frame
+    counts = data.frame(matrix(as.numeric(as.character(counts)), 1, 6))
+    colnames(counts) = c(paste(seq(-120,180,by=60), 'deg', sep=''))
+    
+    # Normalize counts on total number of predictions
+    counts = counts/sum(counts)
+    
+    # Add mask and sub_id column
+    counts$sub_id = sub_id
+    counts$mask = mask
+    
+    # Append counts
+    data_cm_bwd = rbind(data_cm_bwd, counts)
+  }
+}
+
+# Add group column
+data_cm_bwd$group = NA
+data_cm_bwd$group[grep('old', data_cm_bwd$sub_id)] = 'older'
+data_cm_bwd$group[grep('young', data_cm_bwd$sub_id)] = 'younger'
+
+# Reorder columns
+data_cm_bwd = data_cm_bwd[,c(7,8,9,1:6)]
+```
+
+- Save data frame of BWD CF to .tsv
+
+```{r}
+file = file.path(repo_dir, 'analysis', 'curve_fitting', 'data_cm_bwd.tsv', fsep=.Platform$file.sep)
+write.table(data_cm_bwd, file, sep='\t', row.names = FALSE)
+```
+
